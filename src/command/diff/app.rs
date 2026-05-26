@@ -70,6 +70,16 @@ fn ensure_sidebar_visible(state: &mut AppState, visible_height: usize) {
     }
 }
 
+const MIN_WIDTH_FOR_SIDEBAR: u16 = 100;
+
+fn sidebar_width(term_width: u16) -> u16 {
+    (term_width / 4).clamp(20, 35)
+}
+
+fn effective_show_sidebar(show_sidebar: bool, term_width: u16) -> bool {
+    show_sidebar && term_width >= MIN_WIDTH_FOR_SIDEBAR
+}
+
 /// Compute the largest horizontal scroll offset that still keeps content
 /// in view for the current file. Walks `side_by_side` for the longest line
 /// on each side and compares against the panel widths from `PanelLayout`.
@@ -82,8 +92,9 @@ fn max_h_scroll(state: &mut AppState, term_width: u16) -> u16 {
         return 0;
     }
 
-    let sidebar_width = if state.show_sidebar {
-        (term_width / 4).clamp(20, 35)
+    let show_sidebar = effective_show_sidebar(state.show_sidebar, term_width);
+    let sidebar_width = if show_sidebar {
+        sidebar_width(term_width)
     } else {
         0
     };
@@ -99,7 +110,7 @@ fn max_h_scroll(state: &mut AppState, term_width: u16) -> u16 {
     let layout = PanelLayout::calculate(
         term_width,
         sidebar_width,
-        state.show_sidebar,
+        show_sidebar,
         effective_fullscreen,
     );
 
@@ -154,10 +165,10 @@ fn clamp_h_scroll(state: &mut AppState, term_width: u16) {
 /// in view. Computed from the longest visible label minus the sidebar's inner
 /// content width.
 fn max_sidebar_h_scroll(state: &AppState, term_width: u16) -> u16 {
-    if !state.show_sidebar {
+    if !effective_show_sidebar(state.show_sidebar, term_width) {
         return 0;
     }
-    let sidebar_width = (term_width / 4).clamp(20, 35) as usize;
+    let sidebar_width = sidebar_width(term_width) as usize;
     // Sidebar uses Borders::TOP | LEFT | BOTTOM (the right edge is shared
     // with the diff panel's left border), so only the left border eats width.
     let inner_width = sidebar_width.saturating_sub(1);
@@ -411,6 +422,13 @@ fn run_app_internal(
             let row_offset = std::cell::Cell::new(0usize);
             let gaps_cell = std::cell::RefCell::new(Vec::new());
             terminal.draw(|frame| {
+                let term_width = frame.area().width;
+                let show_sidebar = effective_show_sidebar(state.show_sidebar, term_width);
+                let focused_panel = if show_sidebar {
+                    state.focused_panel
+                } else {
+                    FocusedPanel::DiffView
+                };
                 let (offset, gaps) = render_diff(
                     frame,
                     diff,
@@ -422,8 +440,8 @@ fn run_app_internal(
                     state.scroll,
                     state.h_scroll,
                     options.watch,
-                    state.show_sidebar,
-                    state.focused_panel,
+                    show_sidebar,
+                    focused_panel,
                     state.sidebar_selected,
                     state.sidebar_scroll,
                     state.sidebar_h_scroll,
@@ -462,15 +480,16 @@ fn run_app_internal(
                     let t = theme::get();
                     let term = frame.area();
                     let header_h: u16 = if state.stacked_mode { 1 } else { 0 };
-                    let sidebar_w: u16 = if state.show_sidebar {
-                        (term.width / 4).clamp(20, 35)
+                    let show_sidebar = effective_show_sidebar(state.show_sidebar, term.width);
+                    let sidebar_w: u16 = if show_sidebar {
+                        sidebar_width(term.width)
                     } else {
                         0
                     };
                     let layout = PanelLayout::calculate(
                         term.width,
                         sidebar_w,
-                        state.show_sidebar,
+                        show_sidebar,
                         state.diff_fullscreen,
                     );
 
@@ -740,8 +759,9 @@ fn run_app_internal(
                     let term_size = terminal.size()?;
                     let footer_height = 1u16;
                     let header_height = if state.stacked_mode { 1u16 } else { 0u16 };
-                    let sidebar_width = if state.show_sidebar {
-                        (term_size.width / 4).clamp(20, 35)
+                    let show_sidebar = effective_show_sidebar(state.show_sidebar, term_size.width);
+                    let sidebar_width = if show_sidebar {
+                        sidebar_width(term_size.width)
                     } else {
                         0u16
                     };
@@ -778,7 +798,7 @@ fn run_app_internal(
                                     let new_index = state.current_commit_index + 1;
                                     navigate_stacked_commit(&mut state, new_index, &options, backend);
                                 }
-                            } else if state.show_sidebar
+                            } else if show_sidebar
                                 && mouse.column < sidebar_width
                                 && mouse.row >= header_height
                                 && mouse.row < term_size.height.saturating_sub(footer_height)
@@ -828,7 +848,7 @@ fn run_app_internal(
                                 let layout = PanelLayout::calculate(
                                     term_size.width,
                                     sidebar_width,
-                                    state.show_sidebar,
+                                    show_sidebar,
                                     effective_fullscreen,
                                 );
 
@@ -893,7 +913,7 @@ fn run_app_internal(
                                         let layout = PanelLayout::calculate(
                                             term_size.width,
                                             sidebar_width,
-                                            state.show_sidebar,
+                                            show_sidebar,
                                             effective_fullscreen,
                                         );
 
@@ -961,7 +981,7 @@ fn run_app_internal(
                             }
 
                             // Apply the accumulated scroll delta
-                            let in_sidebar = state.show_sidebar
+                            let in_sidebar = show_sidebar
                                 && mouse.column < sidebar_width
                                 && mouse.row < term_size.height.saturating_sub(footer_height);
                             let in_diff = mouse.column >= sidebar_width
@@ -1017,7 +1037,7 @@ fn run_app_internal(
                             }
 
                             // Apply the accumulated horizontal scroll delta
-                            let in_sidebar = state.show_sidebar
+                            let in_sidebar = show_sidebar
                                 && mouse.column < sidebar_width
                                 && mouse.row < term_size.height.saturating_sub(footer_height);
                             let in_diff = mouse.column >= sidebar_width
@@ -1049,6 +1069,11 @@ fn run_app_internal(
                     }
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press && active_modal.is_none() => {
+                    let sidebar_available =
+                        effective_show_sidebar(state.show_sidebar, terminal.size()?.width);
+                    if !sidebar_available && state.focused_panel == FocusedPanel::Sidebar {
+                        state.focused_panel = FocusedPanel::DiffView;
+                    }
                     if key.code != KeyCode::Char('g') {
                         state.pending_key = PendingKey::None;
                     }
@@ -1075,8 +1100,15 @@ fn run_app_internal(
                             break 'main
                         }
                         KeyCode::Char('1') => {
-                            state.focused_panel = FocusedPanel::Sidebar;
                             state.show_sidebar = true;
+                            state.focused_panel = if effective_show_sidebar(
+                                state.show_sidebar,
+                                terminal.size()?.width,
+                            ) {
+                                FocusedPanel::Sidebar
+                            } else {
+                                FocusedPanel::DiffView
+                            };
                             if !matches!(
                                 state.sidebar_item_at_visible(state.sidebar_selected),
                                 Some(SidebarItem::File { .. })
